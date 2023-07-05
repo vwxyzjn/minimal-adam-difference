@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "minimal-adam-layer-norm-bug-repro"
+version = "0.1.0"
+description = ""
+authors = ["Costa Huang <costa.huang@outlook.com>"]
+readme = "README.md"
+packages = [{include = "minimal_adam_layer_norm_bug_repro"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+huggingface-hub = "^0.16.2"
+transformers = "^4.30.2"
+torch = "2.0.0"
+matplotlib = "^3.7.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
