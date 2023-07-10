@@ -15,7 +15,7 @@ def left_padding_to_right_padding(query, pad_id):
     ])
 
 
-def run(optimizer_fn, params_and_grads_file):
+def run(optimizer_fn, params_and_grads_file, comment=""):
     print("==================================================")
     
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -42,7 +42,7 @@ def run(optimizer_fn, params_and_grads_file):
     values = torch.zeros_like(rewards)
 
     optimizer = optimizer_fn(pretrained_model)
-    print(f"working with {optimizer.__class__.__name__}:")
+    print(f"working with {optimizer.__class__.__name__}:", comment)
     with torch.no_grad():
         context_length = query.shape[1]
         query_response = torch.cat((query, response), 1)
@@ -69,7 +69,7 @@ def run(optimizer_fn, params_and_grads_file):
             whitened += mean
         return whitened
 
-    for epoch in range(2):
+    for epoch in range(4):
         rewards = whiten(rewards, shift_mean=False)
         # print("rewards", rewards)
         gamma = 1
@@ -104,6 +104,7 @@ def run(optimizer_fn, params_and_grads_file):
         # print("new_logprobs", new_logprobs)
         logprobs_diff = new_logprobs - logprobs
         ratio = torch.exp(logprobs_diff)
+        print(f"epoch={epoch}, logprobs_diff mean={logprobs_diff.detach().numpy().mean()}")
         print(f"epoch={epoch}, ratio mean={ratio.detach().numpy().mean()}")
         print(f"epoch={epoch}, ratio var={ratio.detach().numpy().var()}")
         print(f"epoch={epoch}, ratio max={ratio.detach().numpy().max()}")
@@ -126,38 +127,43 @@ def run(optimizer_fn, params_and_grads_file):
         grad_diffs = {}
         param_diffs = {}
         i = 0
-        for oname, (name, param) in zip(params_and_gradss[epoch], new_named_params):
-            oparam, ograd = params_and_gradss[epoch][oname]
-            if param.requires_grad:
-                # print(f"param {name, oname}")
-                param_diff = np.abs(oparam - param.detach().numpy()).mean()
-                grad_diff = np.abs(ograd - param.grad.detach().numpy()).mean()
+        if epoch < len(params_and_gradss):
+            for oname, (name, param) in zip(params_and_gradss[epoch], new_named_params):
+                oparam, ograd = params_and_gradss[epoch][oname]
+                if param.requires_grad:
+                    # print(f"param {name, oname}")
+                    param_diff = np.abs(oparam - param.detach().numpy()).mean()
+                    grad_diff = np.abs(ograd - param.grad.detach().numpy()).mean()
 
-                grad_diffs[f"{i} {name} ({ograd.shape})"] = grad_diff
-                param_diffs[f"{i} {name} ({oparam.shape})"] = param_diff
-                # print(f"param_diff={param_diff} grad_diff={grad_diff}")
-                i += 1
+                    grad_diffs[f"{i} {name} ({ograd.shape})"] = grad_diff
+                    param_diffs[f"{i} {name} ({oparam.shape})"] = param_diff
+                    # print(f"param_diff={param_diff} grad_diff={grad_diff}")
+                    i += 1
 
-        # plot grad_diffs
-        os.makedirs(f"diffs/{optimizer.__class__.__name__}", exist_ok=True)
-        fig, ax = plt.subplots(figsize=(10, 20))
-        plt.barh(list(grad_diffs.keys()), list(grad_diffs.values()))
-        plt.title(f"Epoch: {epoch}, Optimizer: {optimizer.__class__.__name__}, Pytorch's gradient vs OAI's tensorflow's gradient")
-        plt.tight_layout()
-        fig.savefig(f"diffs/{optimizer.__class__.__name__}/grad_diffs_{epoch}.png")
-        # plot param_diffs
-        fig, ax = plt.subplots(figsize=(10, 20))
-        plt.barh(list(param_diffs.keys()), list(param_diffs.values()))
-        plt.tight_layout()
-        plt.title(f"Epoch: {epoch}, Optimizer: {optimizer.__class__.__name__}, Pytorch's param vs OAI's tensorflow's param")
-        fig.savefig(f"diffs/{optimizer.__class__.__name__}/param_diffs_{epoch}.png")
+            # plot grad_diffs
+            os.makedirs(f"diffs/{optimizer.__class__.__name__}", exist_ok=True)
+            fig, ax = plt.subplots(figsize=(10, 20))
+            plt.barh(list(grad_diffs.keys()), list(grad_diffs.values()))
+            plt.title(f"Epoch: {epoch}, Optimizer: {optimizer.__class__.__name__}, Pytorch's gradient vs OAI's tensorflow's gradient")
+            plt.tight_layout()
+            fig.savefig(f"diffs/{optimizer.__class__.__name__}/grad_diffs_{epoch}.png")
+            plt.close()
+            # plot param_diffs
+            fig, ax = plt.subplots(figsize=(10, 20))
+            plt.barh(list(param_diffs.keys()), list(param_diffs.values()))
+            plt.tight_layout()
+            plt.title(f"Epoch: {epoch}, Optimizer: {optimizer.__class__.__name__}, Pytorch's param vs OAI's tensorflow's param")
+            fig.savefig(f"diffs/{optimizer.__class__.__name__}/param_diffs_{epoch}.png")
+            plt.close()
 
         optimizer.step()
         approxkl = .5 * ((logprobs_diff) ** 2).mean()
         print("approxkl", approxkl.item(), "pg_loss", pg_loss.item(), "pg_clipfrac", pg_clipfrac.item())
 
+
 run(
-    optimizer_fn=lambda model: optim.Adam(model.parameters(), lr=0.00001, eps=1e-5), 
+    optimizer_fn=lambda model: optim.Adam(model.parameters(), lr=0.00001, eps=1e-5, betas=(0.9, 0.999)), 
+    comment="Adam with eps=1e-5, betas=(0.9, 0.999)",
     params_and_grads_file=hf_hub_download(
         repo_id="vwxyzjn/lm-human-preferences-debug",
         filename="params_and_grads.pkl",
