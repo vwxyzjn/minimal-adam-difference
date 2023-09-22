@@ -1,12 +1,12 @@
-# minimal-adam-layer-norm-bug-repro
+# minimal-adam-difference
 
-This is a minimal repro for a bug in Adam when using LayerNorm for RLHF. 
+This is a minimal repro for early aggresive updates in PyTorch Adam when doing PPO + RLHF. 
 
-**TL;DR.** I found that the gradients of the `LayerNorm` parameters seem "off" compared to those in OpenAI's tensorflow codebase. These gradients further cause an larger effect on all the parameters in the model when using the Adam optimizer. However, if we use the `SGD` optimizer, then the undesirable effects on all the parameters are significantly reduced.
+**TL;DR.** PyTorch Adam causes an aggresive initial policy update. 
 
 ## Setup
 
-I record the original query, response, and rewards from https://github.com/openai/lm-human-preferences and save them in https://huggingface.co/datasets/vwxyzjn/lm-human-preferences-debug/tree/main . I also record the weights and gradeint of the first two epochs of training with Adam and GradientDecent optimizers. 
+I record the original query, response, and rewards from https://github.com/openai/lm-human-preferences and save them in https://huggingface.co/datasets/vwxyzjn/lm-human-preferences-debug/tree/main . I also record the weights and gradeint of the first two epochs of training with Adam and optimizers. 
 
 Here is a table summarizing the files and their contents:
 
@@ -16,7 +16,6 @@ Here is a table summarizing the files and their contents:
 | `response.npy` | The original response (batch of 64) |
 | `rewards.npy` | The original rewards (batch of 64) |
 | `params_and_grads.pkl` | The params and grads of the first two epochs of training with `tf.train.AdamOptimizer(learning_rate=0.00001, epsilon=1e-5)` |
-| `params_and_grads_sgd.pkl` | The params and grads of the first two epochs of training with `tf.train.GradientDescentOptimizer(learning_rate=0.00001)` |
 
 ## Repro
 
@@ -28,32 +27,49 @@ poetry run python main.py
 It should output something like below.
 
 ```
-working with Adam:
+==================================================
+working with Adam: Adam with eps=1e-5
+epoch=0, logprobs_diff mean=0.0
+epoch=0, logprobs_diff var=0.0
+epoch=0, logprobs_diff max=0.0
+epoch=0, logprobs_diff min=0.0
 epoch=0, ratio mean=1.0
 epoch=0, ratio var=0.0
 epoch=0, ratio max=1.0
 epoch=0, ratio min=1.0
-approxkl 0.0 pg_loss -1.2417634032146907e-08 pg_clipfrac 0.0
-epoch=1, ratio mean=1.013449788093567
-epoch=1, ratio var=0.006566493306308985
-epoch=1, ratio max=1.7290376424789429
-epoch=1, ratio min=0.3672836720943451
-approxkl 0.0030072603840380907 pg_loss -0.03935058042407036 pg_clipfrac 0.02604166604578495
-=============================================
-working with SGD:
+approxkl 0.0 pg_loss 1.2417634032146907e-08 pg_clipfrac 0.0
+epoch=1, logprobs_diff mean=0.008101251907646656
+epoch=1, logprobs_diff var=0.004668936599045992
+epoch=1, logprobs_diff max=0.594489574432373
+epoch=1, logprobs_diff min=-0.9134478569030762
+epoch=1, ratio mean=1.0105520486831665
+epoch=1, ratio var=0.005374275613576174
+epoch=1, ratio max=1.8121057748794556
+epoch=1, ratio min=0.4011387825012207
+approxkl 0.0023672834504395723 pg_loss -0.034187596291303635 pg_clipfrac 0.02018229104578495
+==================================================
+working with TFStyleAdam: Tensorflow-style Adam with eps=1e-5
+epoch=0, logprobs_diff mean=0.0
+epoch=0, logprobs_diff var=0.0
+epoch=0, logprobs_diff max=0.0
+epoch=0, logprobs_diff min=0.0
 epoch=0, ratio mean=1.0
 epoch=0, ratio var=0.0
 epoch=0, ratio max=1.0
 epoch=0, ratio min=1.0
-approxkl 0.0 pg_loss -1.2417634032146907e-08 pg_clipfrac 0.0
-epoch=1, ratio mean=1.0000768899917603
-epoch=1, ratio var=1.899234462143795e-06
-epoch=1, ratio max=1.006998062133789
-epoch=1, ratio min=0.9929711818695068
-approxkl 9.512250471743755e-07 pg_loss -0.0003744984569493681 pg_clipfrac 0.0
+approxkl 0.0 pg_loss 1.2417634032146907e-08 pg_clipfrac 0.0
+epoch=1, logprobs_diff mean=0.004073789343237877
+epoch=1, logprobs_diff var=0.0007334011606872082
+epoch=1, logprobs_diff max=0.22331619262695312
+epoch=1, logprobs_diff min=-0.31471776962280273
+epoch=1, ratio mean=1.0044583082199097
+epoch=1, ratio var=0.0007942612282931805
+epoch=1, ratio max=1.250215768814087
+epoch=1, ratio min=0.7299948930740356
+approxkl 0.000374998344341293 pg_loss -0.014567638747394085 pg_clipfrac 0.0052083334885537624
 ```
 
-**Observation 1**: The `ratio` of the `SGD` updates have significantly smaller variance than those of the `Adam` updates. Also, this result in a much smaller `approxkl` and `pg_loss` and `clipfrac` for `SGD` than `Adam`.
+**Observation 1**: The `ratio` of the `TFStyleAdam` updates have significantly smaller variance than those of the `Adam` updates. Also, this result in a much smaller `approxkl` and `pg_loss` and `clipfrac` for `SGD` than `Adam`.
 
 What's going on? I plot the parameter difference between `main.py` and `lm-human-preferences` before the training, which shows the parameters are identical.
 
@@ -113,28 +129,6 @@ Then after a gradient pass (i.e., `optimizer.step()`) in `main.py`, I plot the p
 
 **Observation 3**: Even though the gradient of most layers are similar between pytorch and OAI's codebase, the Adam optimizer causes a significant difference in the parameters. For example, `('transformer.wte.weight', 'policy/model/wte:0')` have near identical gradients as indicated in the last section, but their weights become quite different after a gradient pass.
 
-I wonder if some global regularization / normalization is applied with Adam, which impacts the parameters.
 
-Then I did a same setup but with the SGD optimizer. The gradient difference is of course the same, but the parameter difference is much smaller and only relavent to the `LayerNorm` parameters:
-
-![](diffs/SGD/param_diffs_1.png)
-
-
-## End-to-end
-
-I then did an end-to-end testing with a toy RLHF codebase (https://gist.github.com/vwxyzjn/010e0f92e057ef1a779028d656ab4705) using SGD and Adam, respetively, with 10 random seeds.
-
-
-```bash
-# the only difference is the optmizer used
-diff train_policy.py train_policy_adam.py 
-292c292
-<     optimizer = optim.SGD(policy.parameters(), lr=args.ppo.lr)
----
->     optimizer = optim.Adam(policy.parameters(), lr=args.ppo.lr)
-```
-
-The results are staggering, with SGD converging to a good policy and Adam experiencing significant instability similar to the negative KL divergence issue we have been facing:
-
-![](e2e_results.png)
-
+In comparison, with `TFStyleAdam`, the parameters are much more similar between `main.py` and `lm-human-preferences`:
+![](diffs/TFStyleAdam/param_diffs_1.png). Note the scale of the x-axis is 4x smaller than that of `Adam`.
